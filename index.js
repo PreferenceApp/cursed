@@ -353,23 +353,43 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
 // --- Express routes ---
 app.get("/", (req,res) => res.send(renderLeaderboardHTML(leaderboard)));
 
-app.get("/:name", async (req,res) => {
+app.get("/:name", async (req, res) => {
     const name = req.params.name;
 
-    let newLeaderboard = {};
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        return res.status(400).send("Invalid leaderboard name.");
+    }
+
+    try {
+        const file = await octokit.repos.getContent({
+            owner: REPO_OWNER,
+            repo: REPO_NAME,
+            path: `leaderboards/${name}.json`,
+            ref: REPO_BRANCH
+        });
+
+        if (Array.isArray(file.data) || file.data.type !== "file") {
+            return res.status(404).send(`Leaderboard "${name}" not found.`);
+        }
+
+        const content = Buffer
+            .from(file.data.content, "base64")
+            .toString("utf-8");
+
+        let newLeaderboard;
         try {
-            const file = await octokit.repos.getContent({
-                owner: REPO_OWNER,
-                repo: REPO_NAME,
-                path: `leaderboards/${name}.json`,
-                ref: REPO_BRANCH
-            });
-            const content = Buffer.from(file.data.content,'base64').toString('utf-8');
-            data = JSON.parse(content);
-            newLeaderboard = data;
-        } catch(err) { return res.status(404).send(`Leaderboard "${name}" not found.`); }
-    res.send(renderLeaderboardHTML(newLeaderboard));
+            newLeaderboard = JSON.parse(content);
+        } catch {
+            return res.status(500).send("Invalid leaderboard format.");
+        }
+
+        res.send(renderLeaderboardHTML(newLeaderboard));
+
+    } catch (err) {
+        return res.status(404).send(`Leaderboard "${name}" not found.`);
+    }
 });
+
 
 // --- Start server ---
 app.listen(port, () => console.log(`Access the leaderboard at http://localhost:${port}/`));
