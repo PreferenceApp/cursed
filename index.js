@@ -72,21 +72,21 @@ async function init() {
     client.on(Events.MessageCreate, async message => {
         if (message.author.bot) return;
 
-        const allowedGuildId = "1361375146941874458";
-        const allowedRoleId = "1471376488002621460";
-
-        if (message.guild?.id !== allowedGuildId) {
-            await message.channel.send("This command can only be used in the designated server.");
-            return;
-        }
-
-        // Make sure the member has the allowed role
-        if (!message.member.roles.cache.has(allowedRoleId)) {
-            await message.channel.send("You're not allowed to use this command.");
-            return;
-        }
-
         if (message.content.startsWith(`<@${client.user.id}>`)) {
+            const allowedGuildId = "1361375146941874458";
+            const allowedRoleId = "1471376488002621460";
+
+            if (message.guild?.id !== allowedGuildId) {
+                await message.channel.send("You're not that guy pal. Trust me, you're not that guy.");
+                return;
+            }
+
+            // Make sure the member has the allowed role
+            if (!message.member.roles.cache.has(allowedRoleId)) {
+                await message.channel.send("You're not that guy pal. Trust me, you're not that guy.");
+                return;
+            }
+
             const messageText = message.content.replace(`<@${client.user.id}>`, '').trim() || '0';
 
             // Clear leaderboard
