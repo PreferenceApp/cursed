@@ -355,9 +355,8 @@ app.get("/", (req,res) => res.send(renderLeaderboardHTML(leaderboard)));
 
 app.get("/:name", async (req,res) => {
     const name = req.params.name;
-    let data = leaderboard[name];
 
-    if(!data) {
+    let newLeaderboard = {};
         try {
             const file = await octokit.repos.getContent({
                 owner: REPO_OWNER,
@@ -367,10 +366,9 @@ app.get("/:name", async (req,res) => {
             });
             const content = Buffer.from(file.data.content,'base64').toString('utf-8');
             data = JSON.parse(content);
-            leaderboard = data;
+            newLeaderboard = data;
         } catch(err) { return res.status(404).send(`Leaderboard "${name}" not found.`); }
-    }
-    res.send(renderLeaderboardHTML(leaderboard));
+    res.send(renderLeaderboardHTML(newLeaderboard));
 });
 
 // --- Start server ---
