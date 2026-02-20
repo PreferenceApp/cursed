@@ -27,52 +27,56 @@ const REPO_OWNER = process.env.GITHUB_REPO.split("/")[0];
 const REPO_NAME = process.env.GITHUB_REPO.split("/")[1];
 const REPO_BRANCH = process.env.GITHUB_BRANCH || "main";
 
-let leaderboard = {};
+async function publishLeaderboard(name, newEntries) {
+  const path = `leaderboards/leaderboard.json`;
+  try {
+    let sha;
+    let existingData = {}; // 1. Default to Object, not Array
 
-// --- GitHub helpers ---
-async function publishLeaderboard(name) {
-    const path = `leaderboards/${name}.json`;
     try {
-        let sha;
-        try {
-            const file = await octokit.repos.getContent({ owner: REPO_OWNER, repo: REPO_NAME, path, ref: REPO_BRANCH });
-            sha = file.data.sha;
-        } catch(e) { }
-        await octokit.repos.createOrUpdateFileContents({
-            owner: REPO_OWNER,
-            repo: REPO_NAME,
-            path,
-            message: `Publish leaderboard: ${name}`,
-            content: Buffer.from(JSON.stringify(leaderboard, null, 2)).toString("base64"),
-            branch: REPO_BRANCH,
-            sha
-        });
-        return true;
-    } catch(err) { console.error(err); return false; }
-}
+      const file = await octokit.repos.getContent({
+        owner: REPO_OWNER,
+        repo: REPO_NAME,
+        path,
+        ref: REPO_BRANCH
+      });
+      sha = file.data.sha;
+      const content = Buffer.from(file.data.content, "base64").toString("utf-8");
+      existingData = JSON.parse(content);
+    } catch (e) {
+      console.log("Creating new leaderboard file.");
+    }
 
-async function unpublishLeaderboard(name) {
-    const path = `leaderboards/${name}.json`;
-    try {
-        const file = await octokit.repos.getContent({ owner: REPO_OWNER, repo: REPO_NAME, path, ref: REPO_BRANCH });
-        await octokit.repos.deleteFile({
-            owner: REPO_OWNER,
-            repo: REPO_NAME,
-            path,
-            message: `Unpublish leaderboard: ${name}`,
-            branch: REPO_BRANCH,
-            sha: file.data.sha
-        });
-        return true;
-    } catch(err) { console.error(err); return false; }
-}
+    // 2. Use Spread operator or Object.assign to merge objects
+    const updatedLeaderboard = {
+      ...existingData,
+      ...newEntries // This adds or overwrites the key (messageText)
+    };
 
+    // 3. Push back to GitHub
+    await octokit.repos.createOrUpdateFileContents({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      path,
+      message: `Update leaderboard: ${name}`,
+      content: Buffer.from(JSON.stringify(updatedLeaderboard, null, 2)).toString("base64"),
+      branch: REPO_BRANCH,
+      sha
+    });
+    return true;
+  } catch (err) {
+    console.error("Failed to update leaderboard:", err);
+    return false;
+  }
+}
 // --- Discord bot ---
 async function init() {
     client.on(Events.MessageCreate, async message => {
         if (message.author.bot) return;
 
         if (message.content.startsWith(`<@${client.user.id}>`)) {
+
+            /*
             const allowedGuildId = "1361375146941874458";
             const allowedRoleId = "1471376488002621460";
 
@@ -86,47 +90,8 @@ async function init() {
                 await message.channel.send("You're not that guy pal. Trust me, you're not that guy.");
                 return;
             }
-
+            */
             const messageText = message.content.replace(`<@${client.user.id}>`, '').trim() || '0';
-
-            // Clear leaderboard
-            if (messageText.toLowerCase() === 'clear') {
-                leaderboard = {};
-                await message.channel.send("Successfully cleared the leaderboard");
-                return;
-            }
-
-            // Delete a game
-            if (messageText.toLowerCase().startsWith('delete')) {
-                const gameName = messageText.substring(6).trim();
-                if (leaderboard[gameName]) {
-                    delete leaderboard[gameName];
-                    await message.channel.send(`Successfully deleted "${gameName}" from the leaderboard`);
-                } else {
-                    await message.channel.send(`Unable to find "${gameName}" in the leaderboard`);
-                }
-                return;
-            }
-
-            // Publish leaderboard
-            if (messageText.toLowerCase().startsWith('publish')) {
-                const lbName = messageText.substring(7).trim();
-                if (!lbName) {
-                    await message.channel.send(`Leaderboard name is required.`);
-                    return;
-                }
-                const success = await publishLeaderboard(lbName);
-                await message.channel.send(success ? `Successfully published "${lbName}" to GitHub.` : `Failed to publish "${lbName}".`);
-                return;
-            }
-
-            // Unpublish leaderboard
-            if (messageText.toLowerCase().startsWith('unpublish')) {
-                const lbName = messageText.substring(9).trim();
-                const success = await unpublishLeaderboard(lbName);
-                await message.channel.send(success ? `Successfully unpublished "${lbName}" from GitHub.` : `Failed to unpublish "${lbName}".`);
-                return;
-            }
 
             if(message.attachments.size > 0)
             {
@@ -183,10 +148,12 @@ async function init() {
                         contents: contents
                     });
                     
+                    let leaderboard = {};
                     const rawText = result.candidates[0].content.parts[0].text;
                     const cleanJson = rawText.replace(/```json|```/g, "").trim();
                     leaderboard[messageText] = JSON.parse(cleanJson);
-                    await message.channel.send(`Successfully added "${messageText}" to the leaderboard.`);
+                    const success = await publishLeaderboard(messageText, leaderboard);
+                    await message.channel.send(success ? `Successfully published "${messageText}"` : `Failed to publish "${messageText}".`);
                 }
                 catch(error)
                 {
@@ -202,19 +169,41 @@ async function init() {
 
 await init();
 
-// --- Leaderboard HTML rendering ---
 function renderLeaderboardHTML(data, title="Tournament Standings") {
+
+    /* ================================
+       TEAM AGGREGATION
+    ================================== */
+
     const statsByTeam = Object.entries(data).reduce((acc, [gameName, teams]) => {
         teams.forEach(team => {
             const tName = team.team_name.toUpperCase();
-            if (!acc[tName]) acc[tName] = { team_name: tName, total_points: 0, total_kills: 0, total_damage: 0, games: [], players: {} };
+
+            if (!acc[tName]) {
+                acc[tName] = {
+                    team_name: tName,
+                    total_points: 0,
+                    total_kills: 0,
+                    total_damage: 0,
+                    games: [],
+                    players: {}
+                };
+            }
+
             acc[tName].total_points += team.total_points;
             acc[tName].total_kills += team.kills;
             acc[tName].total_damage += team.damage_dealt;
             acc[tName].games.push({ gameName, ...team });
 
             team.players.forEach(player => {
-                if(!acc[tName].players[player.name]) acc[tName].players[player.name] = { name: player.name, total_kills: 0, total_damage: 0 };
+                if (!acc[tName].players[player.name]) {
+                    acc[tName].players[player.name] = {
+                        name: player.name,
+                        total_kills: 0,
+                        total_damage: 0
+                    };
+                }
+
                 acc[tName].players[player.name].total_kills += player.kills;
                 acc[tName].players[player.name].total_damage += player.damage_dealt;
             });
@@ -222,16 +211,89 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
         return acc;
     }, {});
 
-    const sortedLeaderboard = Object.values(statsByTeam).sort((a,b) => b.total_points - a.total_points);
+
+    /* ================================
+       OVERALL PLAYER AGGREGATION
+    ================================== */
+
+    const overallPlayers = Object.entries(data).reduce((acc, [gameName, teams]) => {
+
+        teams.forEach(team => {
+
+            team.players.forEach(player => {
+
+                if (!acc[player.name]) {
+                    acc[player.name] = {
+                        name: player.name,
+                        total_kills: 0,
+                        total_damage: 0,
+                        games_played: 0,
+                        placement_total: 0
+                    };
+                }
+
+                acc[player.name].total_kills += player.kills;
+                acc[player.name].total_damage += player.damage_dealt;
+                acc[player.name].games_played += 1;
+                acc[player.name].placement_total += team.placement;
+            });
+
+        });
+
+        return acc;
+    }, {});
+
+
+    /* ================================
+       FINALIZE PLAYER STATS
+    ================================== */
+
+    const sortedPlayers = Object.values(overallPlayers)
+        .map(player => ({
+            ...player,
+            avg_placement: player.games_played
+                ? (player.placement_total / player.games_played)
+                : 0
+        }))
+        .sort((a, b) => b.total_kills - a.total_kills);
+
+
+    const sortedLeaderboard =
+        Object.values(statsByTeam)
+        .sort((a,b) => b.total_points - a.total_points);
+
+
+    /* ================================
+       PLAYER LEADERBOARD ROWS
+    ================================== */
+
+    const playerRows = sortedPlayers.map((player, index) => `
+        <tr>
+            <td>${index + 1}</td>
+            <td>${player.name}</td>
+            <td>${player.total_kills}</td>
+            <td>${player.total_damage.toLocaleString()}</td>
+            <td>${player.games_played}</td>
+            <td>${player.avg_placement.toFixed(2)}</td>
+        </tr>
+    `).join('');
+
+
+    /* ================================
+       TEAM LEADERBOARD ROWS
+    ================================== */
 
     const rows = sortedLeaderboard.map((team, index) => {
+
         const gameRows = team.games.map(g => {
+
             const perGamePlayersRows = g.players.map(p => `
                 <tr>
                     <td>${p.name}</td>
                     <td>${p.kills}</td>
                     <td>${p.damage_dealt.toLocaleString()}</td>
-                </tr>`).join('');
+                </tr>
+            `).join('');
 
             return `
             <table class="nested-table">
@@ -275,7 +337,8 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
                     <td>${p.name}</td>
                     <td>${p.total_kills}</td>
                     <td>${p.total_damage.toLocaleString()}</td>
-                </tr>`).join('');
+                </tr>
+            `).join('');
 
         return `
         <tr class="main-row" onclick="toggleDetails('details-${index}')">
@@ -305,14 +368,20 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
         `;
     }).join('');
 
+
+    /* ================================
+       FINAL HTML
+    ================================== */
+
     return `
     <!DOCTYPE html>
     <html>
     <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${title}</title>
     <style>
     body{font-family:'Segoe UI',sans-serif;background:#121212;color:#e0e0e0;padding:40px;}
-    table{width:100%;max-width:1000px;margin:auto;border-collapse:collapse;background:#1e1e1e;box-shadow:0 10px 30px rgba(0,0,0,0.5);border-radius:8px;}
+    table{width:100%;max-width:1100px;margin:auto;border-collapse:collapse;background:#1e1e1e;box-shadow:0 10px 30px rgba(0,0,0,0.5);border-radius:8px;}
     th{background:#2d2d2d;color:#00ffa3;text-transform:uppercase;font-size:13px;}
     th,td{padding:14px;border-bottom:1px solid #333;text-align:center;}
     .main-row{cursor:pointer;transition:.2s ease;}
@@ -323,14 +392,17 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
     .nested-table{width:100%;border-collapse:collapse;margin-bottom:5px;background:#1c1c1c;}
     .nested-table th, .nested-table td{padding:8px;border:1px solid #333;font-size:13px;text-align:center;}
     .nested-inner-table th, .nested-inner-table td{padding:6px;border:1px solid #222;font-size:12px;text-align:center;}
-    h2{text-align:center;margin-bottom:5px;}
-    h4{margin-bottom:5px;color:#00ffa3;}
+    h2{text-align:center;margin-bottom:5px;color:#00ffa3;}
     </style>
     <script>
-    function toggleDetails(id){const el=document.getElementById(id);el.style.display=el.style.display==='none'?'table-row':'none';}
+    function toggleDetails(id){
+        const el=document.getElementById(id);
+        el.style.display=el.style.display==='none'?'table-row':'none';
+    }
     </script>
     </head>
     <body>
+
     <h2>🏆 ${title}</h2>
     <table>
         <thead>
@@ -342,8 +414,31 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
                 <th style="text-align:right;">Total Points</th>
             </tr>
         </thead>
-        <tbody>${rows || '<tr><td colspan="5" style="text-align:center">No matches recorded yet.</td></tr>'}</tbody>
+        <tbody>
+            ${rows || '<tr><td colspan="5">No matches recorded yet.</td></tr>'}
+        </tbody>
     </table>
+
+     <br/><br/>
+
+
+    <h2>🔥 Overall Player Leaderboard</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Rank</th>
+                <th>Player</th>
+                <th>Total KOs</th>
+                <th>Total Damage</th>
+                <th>Games Played</th>
+                <th>Average Placement</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${playerRows || '<tr><td colspan="6">No player data available.</td></tr>'}
+        </tbody>
+    </table>
+
     </body>
     </html>
     `;
@@ -351,25 +446,18 @@ function renderLeaderboardHTML(data, title="Tournament Standings") {
 
 
 // --- Express routes ---
-app.get("/", (req,res) => res.send(renderLeaderboardHTML(leaderboard)));
-
-app.get("/:name", async (req, res) => {
-    const name = req.params.name;
-
-    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-        return res.status(400).send("Invalid leaderboard name.");
-    }
+app.get("/", async (req, res) => {
 
     try {
         const file = await octokit.repos.getContent({
             owner: REPO_OWNER,
             repo: REPO_NAME,
-            path: `leaderboards/${name}.json`,
+            path: `leaderboards/leaderboard.json`,
             ref: REPO_BRANCH
         });
 
         if (Array.isArray(file.data) || file.data.type !== "file") {
-            return res.status(404).send(`Leaderboard "${name}" not found.`);
+            return res.status(404).send(`Leaderboard "leaderboard" not found.`);
         }
 
         const content = Buffer
@@ -386,7 +474,7 @@ app.get("/:name", async (req, res) => {
         res.send(renderLeaderboardHTML(newLeaderboard));
 
     } catch (err) {
-        return res.status(404).send(`Leaderboard "${name}" not found.`);
+        return res.status(404).send(`Leaderboard "leaderboard.json" not found.`);
     }
 });
 
