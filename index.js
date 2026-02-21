@@ -76,7 +76,7 @@ async function init() {
 
         if (message.content.startsWith(`<@${client.user.id}>`)) {
 
-            /*
+            
             const allowedGuildId = "1361375146941874458";
             const allowedRoleId = "1471376488002621460";
 
@@ -90,7 +90,7 @@ async function init() {
                 await message.channel.send("You're not that guy pal. Trust me, you're not that guy.");
                 return;
             }
-            */
+            
             const messageText = message.content.replace(`<@${client.user.id}>`, '').trim() || '0';
 
             if(message.attachments.size > 0)
